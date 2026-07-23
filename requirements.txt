@@ -1,0 +1,21 @@
+# [job-queue] trae APScheduler, necesario para la limpieza periodica de
+# pendientes y el recordatorio de los viernes. Sin el extra, el bot corre
+# pero esos trabajos en segundo plano quedan desactivados.
+python-telegram-bot[job-queue]>=22.0
+playwright>=1.50.0
+python-dotenv>=1.0.0
+openpyxl>=3.1.0
+anthropic>=0.80.0
+pillow>=10.0.0
+PyMuPDF>=1.24.0
+requests>=2.31.0
+# Mejoras de OCR: deskew (corregir foto en angulo), binarizacion adaptativa
+# (luz desigual) y deteccion fiable de blur (Laplacian variance).
+# Sin estos, el bot funciona pero pierde ~60% del beneficio del preprocesamiento.
+# opencv-python tambien sirve de backend para leer los QR de las facturas.
+opencv-python>=4.8.0
+numpy>=1.24.0
+# Lector de QR mas robusto que opencv para codigos pequeños/torcidos. Opcional:
+# si no esta, se usa opencv. En Windows el wheel ya trae la libreria nativa;
+# en Linux puede requerir: apt-get install libzbar0
+pyzbar>=0.1.9

@@ -1,0 +1,30 @@
+# Claves y configuracion personal
+.env
+
+# Datos de usuarios
+datos/
+
+# Cache y descargas temporales
+downloads/
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+
+# Cache de extraccion
+data/extraction_cache.json
+
+# Catálogo de empresas — cada equipo mantiene su propia copia local.
+# La fuente de verdad es la copia del bot en producción.
+data/empresas.json
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# ZIPs generados
+*.zip
+
+# Plantilla de reportes — cada quien usa la suya (puede contener datos reales)
+plantilla_reporte.xlsx
