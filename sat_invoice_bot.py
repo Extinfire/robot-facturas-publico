@@ -1745,29 +1745,55 @@ class SistemaExtraccion:
         logger.info(f"  Número: {numero}")
         logger.info(f"  Razón social: {razon_social}")
 
-        # Paso 2b: Leer el QR de la FEL — SOLO para RELLENAR campos que el OCR
-        # no logro leer. NUNCA pisa un valor que el OCR ya tiene.
+        # Paso 2b: Leer el QR de la FEL.
         #
-        # Por que solo rellenar: el lector cv2 (fallback) puede decodificar mal
-        # un QR de foto y devolver un UUID con formato valido pero EQUIVOCADO.
-        # Si eso pisara la serie del OCR, mandariamos datos erroneos al SAT.
-        # Para PDFs ya usamos el texto exacto del PDF (en telegram_bot), asi que
-        # el QR aqui es solo una ayuda conservadora para fotos con campos vacios.
+        # Si lo decodifico pyzbar, es confiable: pyzbar aplica correccion de
+        # errores Reed-Solomon completa (parte del estandar QR), asi que un
+        # decode exitoso no es una "lectura ambigua" como el OCR de texto —
+        # es el dato exacto codificado en el barcode. En ese caso, el QR
+        # PISA a un OCR que discrepe (ese es justo el caso de OCR confundiendo
+        # 1-2 caracteres hex, p.ej. E vs F, que hace que el SAT rechace).
+        #
+        # Si lo decodifico el fallback cv2 (menos robusto en fotos degradadas,
+        # puede devolver un UUID con formato valido pero equivocado), nos
+        # quedamos con el comportamiento conservador: solo rellenar vacios.
         try:
             qr = _extraer_datos_qr(image_path)
         except Exception as e:
             logger.debug(f"Lectura de QR fallo: {e}")
             qr = {}
         if qr:
-            if qr.get('serie') and not serie:
-                logger.info(f"  ✓ Serie tomada del QR (OCR no la leyo): {qr['serie']}")
-                serie = qr['serie']
-            if qr.get('numero') and not numero:
-                logger.info(f"  ✓ Numero tomado del QR (OCR no lo leyo): {qr['numero']}")
-                numero = qr['numero']
-            if qr.get('nit') and not nit:
-                logger.info(f"  ✓ NIT tomado del QR (OCR no lo leyo): {qr['nit']}")
-                nit = qr['nit']
+            confiable = qr.get('_qr_backend') == 'pyzbar'
+            if qr.get('serie'):
+                if not serie:
+                    logger.info(f"  ✓ Serie tomada del QR (OCR no la leyo): {qr['serie']}")
+                    serie = qr['serie']
+                elif confiable and serie.upper() != qr['serie'].upper():
+                    logger.warning(
+                        f"  ⚠️ Serie OCR ({serie}) != QR ({qr['serie']}) — "
+                        f"usando la del QR (pyzbar, confiable)"
+                    )
+                    serie = qr['serie']
+            if qr.get('numero'):
+                if not numero:
+                    logger.info(f"  ✓ Numero tomado del QR (OCR no lo leyo): {qr['numero']}")
+                    numero = qr['numero']
+                elif confiable and numero.strip() != qr['numero'].strip():
+                    logger.warning(
+                        f"  ⚠️ Numero OCR ({numero}) != QR ({qr['numero']}) — "
+                        f"usando el del QR (pyzbar, confiable)"
+                    )
+                    numero = qr['numero']
+            if qr.get('nit'):
+                if not nit:
+                    logger.info(f"  ✓ NIT tomado del QR (OCR no lo leyo): {qr['nit']}")
+                    nit = qr['nit']
+                elif confiable and self.parser.limpiar_nit(nit) != self.parser.limpiar_nit(qr['nit']):
+                    logger.warning(
+                        f"  ⚠️ NIT OCR ({nit}) != QR ({qr['nit']}) — "
+                        f"usando el del QR (pyzbar, confiable)"
+                    )
+                    nit = qr['nit']
 
         # Paso 3: Limpiar y validar NIT con dígito verificador
         if nit and _es_nit_excluido(nit):
@@ -2193,6 +2219,19 @@ class SistemaExtraccion:
             )
             return None
         numero_limpio = self.parser.limpiar_numero_factura(n_raw) if n_raw else None
+
+        # Sonnet a veces confunde un fragmento del UUID de autorizacion (p.ej.
+        # el tercer grupo "4204" de "E7CC976D-1627-4204-...") con el numero de
+        # DTE real. Si ya teniamos un numero previo mas largo y plausible, y
+        # el nuevo es mucho mas corto, es señal de mala lectura — nos quedamos
+        # con el numero previo en vez de pisarlo con basura.
+        if (numero_limpio and resultado_previo and resultado_previo.numero_factura
+                and len(numero_limpio) < len(resultado_previo.numero_factura) - 2):
+            logger.warning(
+                f"  ⚠️ Sonnet devolvió numero sospechosamente corto ({numero_limpio}) "
+                f"vs previo ({resultado_previo.numero_factura}) — conservando el previo"
+            )
+            numero_limpio = resultado_previo.numero_factura
 
         if not (nit_limpio and numero_limpio):
             logger.warning(f"Sonnet no produjo datos completos: nit={nit_limpio}, num={numero_limpio}")

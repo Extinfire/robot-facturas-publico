@@ -3117,6 +3117,7 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
                 return
             await query.answer()
             est = (fac.get('razon_social') or fac.get('establecimiento') or '?')
+            hora = fac.get('hora_emision', '') or 'sin hora'
             tipo_actual = fac.get('tipo_comida') or 'sin tipo'
             teclado = InlineKeyboardMarkup([
                 [
@@ -3135,8 +3136,8 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
             ])
             await query.message.reply_text(
                 f"🏷 *Cambiar tipo*\n\n"
-                f"📅 {fac.get('fecha_emision', '?')}\n"
                 f"🏪 {est[:40]}\n"
+                f"📅 {fac.get('fecha_emision', '?')}  🕐 {hora}\n"
                 f"💰 {fac.get('monto', 'Q?')}\n"
                 f"Tipo actual: *{tipo_actual}*\n\n"
                 f"¿A qué tipo cambiar?",
@@ -4427,12 +4428,15 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
         botones = []
         for i, r in enumerate(facturas):
             fecha = r.get('fecha_emision', '?')
+            hora = r.get('hora_emision', '') or ''
+            fecha_hora = f"{fecha} {hora}".strip()
             monto = r.get('monto', 'Q?')
             tipo = r.get('tipo_comida') or '_sin tipo_'
             est = (r.get('razon_social') or r.get('establecimiento') or '?')[:22]
-            lineas.append(f"{i + 1}. {fecha} — {est} — {monto} — *{tipo}*")
+            lineas.append(f"{i + 1}. {fecha_hora} — {est} — {monto} — *{tipo}*")
+            etiqueta = f"{i + 1}. {fecha_hora} · {monto}"
             botones.append([InlineKeyboardButton(
-                f"✏️ {i + 1}. {fecha} · {tipo}",
+                f"✏️ {etiqueta}",
                 callback_data=f"tipo_pick:{sid}|{i}"
             )])
         botones.append([InlineKeyboardButton("❌ Cerrar", callback_data=f"tipo_cerrar:{sid}")])

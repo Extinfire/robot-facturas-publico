@@ -89,11 +89,16 @@ def _variantes_cv2(img):
     return variantes
 
 
-def leer_qr_texto(image_path) -> list:
-    """Devuelve la lista de textos decodificados de los QR en la imagen.
+def leer_qr_texto(image_path) -> tuple:
+    """Devuelve (backend, lista_de_textos) decodificados de los QR en la imagen.
+
+    backend es 'pyzbar', 'cv2' o '' (nada encontrado) — indica que lector
+    decodifico el QR, para que el llamador pueda decidir cuanto confiar en
+    el resultado (pyzbar aplica correccion Reed-Solomon completa y es mucho
+    mas robusto que el detector de cv2 en fotos degradadas).
 
     Estrategia (de mejor a peor lector), probando varias versiones
-    preprocesadas para fotos malas. Nunca lanza: si falla, retorna []."""
+    preprocesadas para fotos malas. Nunca lanza: si falla, retorna ('', [])."""
     image_path = str(image_path)
     textos: list = []
 
@@ -121,7 +126,7 @@ def leer_qr_texto(image_path) -> list:
                     if t and t not in textos:
                         textos.append(t)
                 if textos:
-                    return textos
+                    return "pyzbar", textos
         except Exception as e:
             logger.debug(f"pyzbar fallo: {e}")
 
@@ -151,7 +156,7 @@ def leer_qr_texto(image_path) -> list:
         except Exception as e:
             logger.debug(f"cv2 QR fallo: {e}")
 
-    return textos
+    return ("cv2" if textos else ""), textos
 
 
 def parsear_qr_fel(texto: str) -> dict:
@@ -219,7 +224,7 @@ def extraer_datos_qr(image_path) -> dict:
     UUID de autorizacion (es el de la FEL)."""
     if not (_PYZBAR or _CV2):
         return {}
-    textos = leer_qr_texto(image_path)
+    backend, textos = leer_qr_texto(image_path)
     if not textos:
         logger.info(f"📷 No se pudo leer ningun QR (backend: {backend_disponible()})")
         return {}
@@ -233,6 +238,11 @@ def extraer_datos_qr(image_path) -> dict:
         elif not mejor:
             mejor = d
     if mejor:
+        # pyzbar aplica correccion de errores Reed-Solomon completa al decodificar;
+        # si paso esa validacion, el contenido es confiable (no es lectura de texto
+        # ambigua como el OCR). cv2 es menos robusto en fotos degradadas, asi que
+        # el llamador debe seguir tratandolo como pista, no como fuente de verdad.
+        mejor['_qr_backend'] = backend
         logger.info(f"✅ Datos del QR: {mejor}")
     return mejor
 
