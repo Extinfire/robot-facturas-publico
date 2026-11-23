@@ -232,6 +232,71 @@ def _set_nota_usuario(user_id: int, nota: str) -> bool:
         return True
 
 
+# ─────────────────────────────────────────────
+#  PERFIL: CECO / CÓDIGO / NOMBRE / APELLIDO
+# ─────────────────────────────────────────────
+
+# campo interno -> (nombre visible, alias aceptados en /perfil <alias> <valor>)
+CAMPOS_PERFIL = {
+    'ceco': ("CECO (centro de costo)", ('ceco', 'centro', 'cc', 'centro_costo', 'centrocosto')),
+    'codigo_empleado': ("Codigo de empleado", ('codigo', 'cod', 'empleado', 'codigo_empleado')),
+    'nombre': ("Nombre", ('nombre',)),
+    'apellido': ("Apellido", ('apellido',)),
+}
+
+
+def _campo_perfil_desde_alias(alias: str) -> Optional[str]:
+    alias = (alias or "").lower().strip()
+    for campo, (_, aliases) in CAMPOS_PERFIL.items():
+        if alias in aliases:
+            return campo
+    return None
+
+
+def _normalizar_ceco(texto: str) -> Optional[str]:
+    """Limpia un CECO escrito por el usuario. Retorna None si no es valido.
+
+    Acepta digitos, letras y guiones (ej. '349065', '349 065', 'GT-349065');
+    quita espacios y puntos sobrantes. Antes solo se aceptaban digitos puros,
+    lo que impedia cambiar a centros de costo con letras o guiones.
+    """
+    limpio = re.sub(r"[\s.]", "", (texto or "")).upper()
+    if not limpio or len(limpio) > 20:
+        return None
+    if not re.fullmatch(r"[A-Z0-9-]+", limpio) or not re.search(r"[0-9A-Z]", limpio):
+        return None
+    return limpio
+
+
+def _validar_valor_perfil(campo: str, valor: str) -> tuple[Optional[str], str]:
+    """Retorna (valor_limpio, error). Si error != '' el valor no es valido."""
+    valor = (valor or "").strip()
+    if campo == 'ceco':
+        ceco = _normalizar_ceco(valor)
+        if not ceco:
+            return None, ("CECO invalido. Usa solo numeros, letras o guiones "
+                          "(ej. 349065).")
+        return ceco, ""
+    if not valor:
+        return None, "El valor no puede estar vacio."
+    if len(valor) > 60:
+        return None, "El valor es demasiado largo (max. 60 caracteres)."
+    return valor, ""
+
+
+def _username_registrado(user_id: int) -> str:
+    """Username con el que se creo la carpeta del usuario (segun users_db)."""
+    u = _cargar_users_db().get(str(user_id)) or {}
+    return u.get('username') or u.get('first_name') or ""
+
+
+def _texto_perfil(perfil: dict, titulo: str = "Tu perfil") -> str:
+    lineas = [f"{titulo}:\n"]
+    for campo, (nombre, _) in CAMPOS_PERFIL.items():
+        lineas.append(f"{nombre}: {perfil.get(campo) or 'No configurado'}")
+    return "\n".join(lineas)
+
+
 async def notificar_admin(bot, mensaje: str):
     """Envía un mensaje de alerta al admin si ADMIN_CHAT_ID está configurado."""
     if not ADMIN_CHAT_ID:
@@ -1001,6 +1066,9 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
                 f"`/admin limite <id> <n>` — cambiar límite mensual\n"
                 f"`/admin nota <id> <texto>` — agregar nota\n"
                 f"`/admin pendientes` — ver solo pendientes\n"
+                f"`/admin perfil <id>` — ver CECO/codigo de un usuario\n"
+                f"`/admin ceco <id> <ceco>` — cambiar CECO de un usuario\n"
+                f"`/admin perfil <id> codigo <valor>` — cambiar codigo\n"
             )
             await update.message.reply_text(texto, parse_mode="Markdown")
             return
@@ -1131,6 +1199,45 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
                 await update.message.reply_text(f"✅ Nota guardada para `{uid}`.", parse_mode="Markdown")
             else:
                 await update.message.reply_text(f"❌ Usuario `{uid}` no encontrado.", parse_mode="Markdown")
+            return
+
+        # /admin perfil <id>                      → ver perfil de otro usuario
+        # /admin perfil <id> <campo> <valor>      → cambiarlo (ceco/codigo/nombre/apellido)
+        # /admin ceco <id> <valor>                → atajo para cambiar el CECO
+        if subcomando in ("perfil", "ceco") and len(args) >= 2:
+            uid = _safe_int(args[1])
+            if uid is None or str(uid) not in _cargar_users_db():
+                await update.message.reply_text(
+                    f"Usuario {args[1]} no encontrado. Usa /admin usuarios para ver los IDs."
+                )
+                return
+            uname = _username_registrado(uid)
+            if subcomando == "ceco":
+                campo, valor = 'ceco', " ".join(args[2:])
+            elif len(args) >= 4:
+                campo, valor = _campo_perfil_desde_alias(args[2]), " ".join(args[3:])
+            else:
+                campo, valor = None, ""
+            if subcomando == "perfil" and len(args) < 4:
+                await update.message.reply_text(
+                    _texto_perfil(leer_perfil_usuario(uid, uname), f"Perfil de {uname or uid} (ID {uid})")
+                    + f"\n\nPara cambiar:\n/admin ceco {uid} 349065\n/admin perfil {uid} codigo 12345"
+                )
+                return
+            if not campo or not valor.strip():
+                await update.message.reply_text(
+                    "Uso:\n/admin ceco <id> <ceco>\n/admin perfil <id> <ceco|codigo|nombre|apellido> <valor>"
+                )
+                return
+            if await self._guardar_campo_perfil(update.message, uid, uname, campo, valor):
+                try:
+                    nuevo = leer_perfil_usuario(uid, uname).get(campo, '')
+                    await self.app.bot.send_message(
+                        chat_id=uid,
+                        text=f"ℹ️ El administrador actualizo tu {CAMPOS_PERFIL[campo][0]}: {nuevo}",
+                    )
+                except Exception:
+                    pass
             return
 
         await update.message.reply_text("Subcomando no reconocido. Usa `/admin` para ver opciones.", parse_mode="Markdown")
@@ -1555,51 +1662,64 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
         user_id = update.message.from_user.id
         username = update.message.from_user.username or update.message.from_user.first_name or ""
         args = context.args or []
-        perfil = leer_perfil_usuario(user_id, username)
 
         # /perfil ceco 349065  o  /perfil codigo 12345  o  /perfil nombre Juan  o  /perfil apellido Perez
-        if len(args) >= 2:
-            campo = args[0].lower()
-            valor = " ".join(args[1:]).strip()
-            if campo in ('ceco',):
-                if not valor.isdigit():
-                    await update.message.reply_text("El CECO debe ser un numero.")
-                    return
-                guardar_perfil_usuario(user_id, username, ceco=valor)
-                await update.message.reply_text(f"CECO actualizado: *{valor}*", parse_mode="Markdown")
-            elif campo in ('codigo', 'cod', 'empleado'):
-                guardar_perfil_usuario(user_id, username, codigo_empleado=valor)
-                await update.message.reply_text(f"Codigo de empleado actualizado: *{valor}*", parse_mode="Markdown")
-            elif campo in ('nombre',):
-                guardar_perfil_usuario(user_id, username, nombre=valor)
-                await update.message.reply_text(f"Nombre actualizado: *{valor}*", parse_mode="Markdown")
-            elif campo in ('apellido',):
-                guardar_perfil_usuario(user_id, username, apellido=valor)
-                await update.message.reply_text(f"Apellido actualizado: *{valor}*", parse_mode="Markdown")
-            else:
+        # /perfil ceco  (sin valor) -> pregunta el valor en el siguiente mensaje
+        if args:
+            campo = _campo_perfil_desde_alias(args[0])
+            if not campo:
                 await update.message.reply_text(
-                    "Uso:\n/perfil ceco 349065\n/perfil codigo 12345\n/perfil nombre Juan\n/perfil apellido Perez"
+                    "Uso:\n/perfil ceco 349065\n/perfil codigo 12345\n"
+                    "/perfil nombre Juan\n/perfil apellido Perez\n\n"
+                    "O escribe /perfil y toca el boton del dato que quieres cambiar."
                 )
+                return
+            if len(args) == 1:
+                await self._pedir_valor_perfil(update.message, context, campo)
+                return
+            await self._guardar_campo_perfil(update.message, user_id, username, campo, " ".join(args[1:]))
             return
 
-        # Sin args: mostrar perfil actual
-        ceco = perfil.get('ceco', 'No configurado')
-        cod = perfil.get('codigo_empleado', 'No configurado')
-        nombre = perfil.get('nombre', 'No configurado')
-        apellido = perfil.get('apellido', 'No configurado')
+        # Sin args: mostrar perfil actual con botones para editar
+        perfil = leer_perfil_usuario(user_id, username)
+        teclado = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Cambiar CECO", callback_data="perfil_editar:ceco"),
+             InlineKeyboardButton("✏️ Cambiar codigo", callback_data="perfil_editar:codigo_empleado")],
+            [InlineKeyboardButton("✏️ Cambiar nombre", callback_data="perfil_editar:nombre"),
+             InlineKeyboardButton("✏️ Cambiar apellido", callback_data="perfil_editar:apellido")],
+        ])
         await update.message.reply_text(
-            f"Tu perfil:\n\n"
-            f"CECO: *{ceco}*\n"
-            f"Codigo de empleado: *{cod}*\n"
-            f"Nombre: *{nombre}*\n"
-            f"Apellido: *{apellido}*\n\n"
-            f"Para cambiar:\n"
-            f"/perfil ceco 349065\n"
-            f"/perfil codigo 12345\n"
-            f"/perfil nombre Juan\n"
-            f"/perfil apellido Perez",
-            parse_mode="Markdown"
+            _texto_perfil(perfil) + "\n\n"
+            "Toca un boton para cambiar un dato, o escribe directo:\n"
+            "/perfil ceco 349065\n/perfil codigo 12345",
+            reply_markup=teclado,
         )
+
+    async def _pedir_valor_perfil(self, message, context, campo: str):
+        """Deja al usuario en modo 'editando perfil': el siguiente texto es el nuevo valor."""
+        context.user_data['estado'] = 'editando_perfil'
+        context.user_data['perfil_campo'] = campo
+        nombre = CAMPOS_PERFIL[campo][0]
+        ejemplo = " (ej. 349065)" if campo == 'ceco' else ""
+        await message.reply_text(
+            f"Escribe el nuevo valor para {nombre}{ejemplo}.\n"
+            f"Escribe 'cancelar' para salir sin cambios."
+        )
+
+    async def _guardar_campo_perfil(self, message, user_id: int, username: str, campo: str, valor: str) -> bool:
+        limpio, error = _validar_valor_perfil(campo, valor)
+        if error:
+            await message.reply_text(error)
+            return False
+        anterior = leer_perfil_usuario(user_id, username).get(campo) or "No configurado"
+        guardar_perfil_usuario(user_id, username, **{campo: limpio})
+        logger.info(f"Perfil user {user_id}: {campo} '{anterior}' -> '{limpio}'")
+        await message.reply_text(
+            f"✅ {CAMPOS_PERFIL[campo][0]} actualizado.\n"
+            f"Antes: {anterior}\nAhora: {limpio}\n\n"
+            f"Los proximos reportes usaran este valor."
+        )
+        return True
 
     async def msg_procesar_foto(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Procesa fotos de facturas. 1 foto → flujo inmediato. 2+ fotos seguidas → flujo batch."""
@@ -2422,6 +2542,24 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
         user_id = update.message.from_user.id
         texto = update.message.text.strip()
 
+        # Editando un dato del perfil (boton de /perfil o "/perfil ceco" sin valor)
+        if context.user_data.get('estado') == 'editando_perfil':
+            campo = context.user_data.get('perfil_campo', '')
+            if texto.lower() in ('cancelar', 'salir'):
+                context.user_data.pop('estado', None)
+                context.user_data.pop('perfil_campo', None)
+                await update.message.reply_text("Sin cambios en tu perfil.")
+                return
+            if campo in CAMPOS_PERFIL:
+                username = update.message.from_user.username or update.message.from_user.first_name or ""
+                ok = await self._guardar_campo_perfil(update.message, user_id, username, campo, texto)
+                if not ok:
+                    await update.message.reply_text("Intenta de nuevo o escribe 'cancelar'.")
+                    return
+            context.user_data.pop('estado', None)
+            context.user_data.pop('perfil_campo', None)
+            return
+
         # Esperando odómetro tras guardar factura de gasolina
         pend_odo = context.user_data.get('esperando_odometro')
         if pend_odo:
@@ -2474,10 +2612,10 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
             # Permitir "ok" para reusar CECO guardado
             if texto.lower() == 'ok' and perfil.get('ceco'):
                 ceco = perfil['ceco']
-            elif texto.strip().isdigit():
-                ceco = texto.strip()
+            elif _normalizar_ceco(texto):
+                ceco = _normalizar_ceco(texto)
             else:
-                await update.message.reply_text("El CECO debe ser un numero.\nIntenta de nuevo o escribe 'cancelar':")
+                await update.message.reply_text("CECO invalido (usa numeros, letras o guiones).\nIntenta de nuevo o escribe 'cancelar':")
                 return
             context.user_data['ceco'] = ceco
             # Pedir código de empleado (o usar el guardado)
@@ -2888,6 +3026,13 @@ Hola! Soy tu asistente para extraer datos de facturas guatemaltecas.
             return await self._router_cb_sistema(query, context, accion, pend_id, user_id)
         if accion in {"clasificar", "odometro_cancelar", "odometro_cerrar", "odometro_edit", "tipo_cerrar", "tipo_pick", "tipo_set"}:
             return await self._router_cb_tipo_odometro(query, context, accion, pend_id, user_id)
+        if accion == "perfil_editar":
+            if pend_id not in CAMPOS_PERFIL:
+                await query.answer("Dato no valido.", show_alert=True)
+                return
+            await query.answer()
+            await self._pedir_valor_perfil(query.message, context, pend_id)
+            return
         if accion in {"eliminar_factura", "recordatorio_reporte", "recordatorio_sin_facturas", "reporte_cancelar", "reporte_confirmar_edicion", "reporte_editar", "reporte_excluir", "reporte_formato", "reporte_generar", "reporte_preview"}:
             return await self._router_cb_reportes(query, context, accion, pend_id, user_id)
         if accion in {"cancelar_todas_abort", "cancelar_todas_confirm", "cman", "csug", "cvar", "cver", "revisar_pendientes"} or (accion == "verificar_todas" and not pend_id):
